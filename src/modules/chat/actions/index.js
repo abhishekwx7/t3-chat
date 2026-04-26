@@ -32,7 +32,7 @@ export const createChatWithMessage = async (values) => {
           create: {
             content,
             messageRole: MessageRole.USER,
-            messageRole: MessageRole.NORMAL,
+            messageType: MessageType.NORMAL,
             model,
           },
         },
@@ -48,5 +48,122 @@ export const createChatWithMessage = async (values) => {
   } catch (error) {
     console.error("Error creating chat:", error);
     return { success: false, message: "Failed to create chat" };
+  }
+};
+
+export const getAllChats = async () => {
+  try {
+    const user = await currentUser();
+
+    if (!user) {
+      return {
+        success: false,
+        message: "Unauthorized user",
+      };
+    }
+
+    const chats = await db.chat.findMany({
+      where: {
+        userId: user.id,
+      },
+      include: {
+        messages: true,
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+    return {
+      success: true,
+      message: "Chats fetched successfully",
+      data: chats,
+    };
+  } catch (error) {
+    console.error("Error fetching chats:", error);
+    return {
+      success: false,
+      message: "Failed to fetch chats",
+    };
+  }
+};
+
+export const getChatById = async (chatId) => {
+  const user = await currentUser();
+
+  if (!user) {
+    return {
+      success: false,
+      message: "Unauthorized user",
+    };
+  }
+
+  try {
+    const chat = await db.chat.findUnique({
+      where: {
+        id: chatId,
+        userId: user.id,
+      },
+      include: {
+        messages: true,
+      },
+    });
+
+    return {
+      success: true,
+      message: "Chat Fetched Successfully",
+      data: chat,
+    };
+  } catch (error) {
+    console.error("Error fetching chat:", error);
+    return {
+      success: false,
+      message: "Failed to fetch chat",
+    };
+  }
+};
+
+export const deleteChat = async (chatId) => {
+  try {
+    const user = await currentUser();
+
+    if (!user) {
+      return {
+        success: false,
+        message: "Unauthorized user",
+      };
+    }
+
+    const chat = await db.chat.findUnique({
+      where: {
+        id: chatId,
+        userId: user.id,
+      },
+    });
+
+    if (!chat) {
+      return {
+        success: false,
+        message: "Chat not found",
+      };
+    }
+
+    await db.chat.delete({
+      where: {
+        id: chatId,
+      },
+    });
+
+    revalidatePath("/");
+    return {
+      success: true,
+      message: "Chat deleted successfully",
+    };
+  } catch (error) {
+    console.error("Error deleting chat:", error);
+    return {
+      success: false,
+      message: "Failed to delete chat",
+    };
   }
 };
