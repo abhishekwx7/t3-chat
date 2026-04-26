@@ -1,5 +1,6 @@
 import { auth } from "@/lib/auth";
 import { currentUser } from "@/modules/authentication/actions";
+import { getAllChats } from "@/modules/chat/actions";
 import ChatSidebar from "@/modules/chat/components/chat-sidebar";
 import Header from "@/modules/chat/components/headers";
 import { headers } from "next/headers";
@@ -13,13 +14,15 @@ const layout = async ({ children }) => {
 
   const user = await currentUser();
 
+  const { data: chats } = await getAllChats();
+
   if (!session) {
     redirect("/sign-in");
   }
 
   return (
     <div className="flex h-screen overflow-hidden">
-      <ChatSidebar user={user} />
+      <ChatSidebar user={user} chats={chats} />
 
       <div className="flex flex-col flex-1 overflow-hidden">
         <Header />
