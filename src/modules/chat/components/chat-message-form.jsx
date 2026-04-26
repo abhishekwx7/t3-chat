@@ -8,11 +8,14 @@ import { Button } from "@/components/ui/button";
 import { useAIModels } from "@/modules/ai-agents/hook/ai-agent";
 import { Spinner } from "@/components/ui/spinner";
 import { ModelSelector } from "./model-selector";
+import { useCreateChat } from "../hooks/chat";
+import { toast } from "sonner";
 
 const ChatMessageForm = ({ initialMessage, onMessageChange }) => {
   const { data: models, isPending } = useAIModels();
   const [message, setMessage] = useState("");
   const [selectedModel, setSelectedModel] = useState(models?.models[0].id);
+  const { mutateAsync, isPending: isChatPending } = useCreateChat();
 
   useEffect(() => {
     if (initialMessage) {
@@ -24,9 +27,13 @@ const ChatMessageForm = ({ initialMessage, onMessageChange }) => {
   const handleSubmit = async (e) => {
     try {
       e.preventDefault();
-      console.log("Message Sent");
+      await mutateAsync({ content: message, model: selectedModel });
+      toast.success("Message sent successfully");
     } catch (error) {
-      console.log(error);
+      console.error("Error sending message: ", error);
+      toast.error("Failed to send message");
+    } finally {
+      setMessage("");
     }
   };
   return (
@@ -65,13 +72,21 @@ const ChatMessageForm = ({ initialMessage, onMessageChange }) => {
             </div>
             <Button
               type="submit"
-              disabled={!message.trim()}
+              disabled={!message.trim() || isChatPending}
               size="sm"
               variant={message.trim() ? "default" : "ghost"}
               className="h-8 w-8 p-0 rounded-full"
             >
-              <Send className="h-4 w-4" />
-              <span className="sr-only">Send Messages</span>
+              {isChatPending ? (
+                <>
+                  <Spinner />
+                </>
+              ) : (
+                <>
+                  <Send className="h-4 w-4" />
+                  <span className="sr-only">Send Messages</span>
+                </>
+              )}
             </Button>
           </div>
         </div>
