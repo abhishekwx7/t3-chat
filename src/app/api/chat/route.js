@@ -1,28 +1,29 @@
-import { convertToModelMessages, streamText, tool } from "ai";
+import { convertToModelMessages, streamText } from "ai";
 import db from "@/lib/db";
 import { MessageRole, MessageType } from "@prisma/client";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { CHAT_SYSTEM_PROMPT } from "@/lib/prompt";
 
-// initalize openRouter provider
 const provider = createOpenRouter({
   apiKey: process.env.OPENROUTER_API_KEY,
 });
 
 function convertStoredMessageToUI(msg) {
   try {
-    const parts = JSON.parse(msg.content);
-    const validParts = parts.filter((part) => part.type === "text");
+    const parsed = JSON.parse(msg.content);
+    const parts = Array.isArray(parsed)
+      ? parsed.filter((part) => part?.type === "text" && part?.text)
+      : [{ type: "text", text: msg.content }];
 
-    if (validParts.length === 0) return null;
+    if (parts.length === 0) return null;
 
     return {
       id: msg.id,
       role: msg.messageRole.toLowerCase(),
-      parts: validParts,
+      parts,
       createdAt: msg.createdAt,
     };
-  } catch (e) {
+  } catch {
     return {
       id: msg.id,
       role: msg.messageRole.toLowerCase(),
@@ -32,23 +33,81 @@ function convertStoredMessageToUI(msg) {
   }
 }
 
-function extractPartsAsJSON(message) {
-  if (message.parts && Array.isArray(message.parts)) {
-    return JSON.stringify(message.parts);
+function normalizeUIMessage(message) {
+  if (!message) return null;
+
+  if (message.role && Array.isArray(message.parts)) {
+    return {
+      id: message.id,
+      role: message.role,
+      parts: message.parts
+        .filter((part) => part?.type === "text" && part?.text)
+        .map((part) => ({
+          type: "text",
+          text: part.text,
+        })),
+      createdAt: message.createdAt,
+    };
   }
 
-  const content = message.content || "";
-  return JSON.stringify([{ type: "text", text: content }]);
+  if (message.role && typeof message.content === "string") {
+    return {
+      id: message.id,
+      role: message.role,
+      parts: [{ type: "text", text: message.content }],
+      createdAt: message.createdAt,
+    };
+  }
+
+  if (typeof message.text === "string") {
+    return {
+      id: message.id,
+      role: "user",
+      parts: [{ type: "text", text: message.text }],
+      createdAt: message.createdAt,
+    };
+  }
+
+  return null;
+}
+
+function extractPartsAsJSON(message) {
+  if (message?.parts && Array.isArray(message.parts)) {
+    return JSON.stringify(
+      message.parts.filter((part) => part?.type === "text" && part?.text),
+    );
+  }
+
+  if (typeof message?.content === "string") {
+    return JSON.stringify([{ type: "text", text: message.content }]);
+  }
+
+  if (typeof message?.text === "string") {
+    return JSON.stringify([{ type: "text", text: message.text }]);
+  }
+
+  return JSON.stringify([]);
 }
 
 export async function POST(req) {
   try {
-    const {
-      chatId,
-      messages: newMessages,
-      model,
-      skipUserMessage,
-    } = await req.json();
+    const body = await req.json();
+
+    console.log("API /chat body:", body);
+
+    const { chatId, messages, message, model, skipUserMessage } = body;
+
+    if (!model) {
+      return new Response(
+        JSON.stringify({
+          error: "Model is required",
+        }),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
 
     const previousMessages = chatId
       ? await db.message.findMany({
@@ -59,31 +118,47 @@ export async function POST(req) {
         })
       : [];
 
-    const uiMessages = previousMessages
+    const storedUIMessages = previousMessages
       .map(convertStoredMessageToUI)
-      .filter((msg) => msg !== null);
+      .filter(Boolean);
 
-    const normalizedNewMessages = Array.isArray(newMessages)
-      ? newMessages
-      : [newMessages];
+    const incomingMessages = Array.isArray(messages)
+      ? messages
+      : message
+        ? [message]
+        : [];
 
-    const allUIMessages = [...uiMessages, ...normalizedNewMessages];
+    const normalizedIncomingMessages = incomingMessages
+      .map(normalizeUIMessage)
+      .filter(Boolean)
+      .filter((msg) => Array.isArray(msg.parts) && msg.parts.length > 0);
 
-    let modelMessages;
+    const allUIMessages = [
+      ...storedUIMessages,
+      ...normalizedIncomingMessages,
+    ].filter(Boolean);
 
-    try {
-      modelMessages = convertToModelMessages(allUIMessages);
-    } catch (conversionError) {
-      modelMessages = allUIMessages
-        .map((msg) => ({
-          role: msg.role,
-          content: msg.parts
-            .filter((p) => p.type === "text")
-            .map((p) => p.text)
-            .join("\n"),
-        }))
-        .filter((m) => m.content);
+    if (!Array.isArray(allUIMessages) || allUIMessages.length === 0) {
+      return new Response(
+        JSON.stringify({
+          error: "No valid messages found",
+        }),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
     }
+
+    const modelMessages = allUIMessages.map((msg) => ({
+      role: msg.role,
+      content: msg.parts
+        .filter((part) => part.type === "text" && part.text)
+        .map((part) => part.text)
+        .join("\n"),
+    }));
+
+    console.log("modelMessages:", modelMessages);
 
     const result = streamText({
       model: provider.chat(model),
@@ -94,15 +169,19 @@ export async function POST(req) {
     return result.toUIMessageStreamResponse({
       sendReasoning: true,
       originalMessages: allUIMessages,
+
       onFinish: async ({ responseMessage }) => {
         try {
+          if (!chatId) return;
+
           const messagesToSave = [];
 
           if (!skipUserMessage) {
-            const latestUserMessage =
-              normalizedNewMessages[normalizedNewMessages.length - 1];
+            const latestUserMessage = [...normalizedIncomingMessages]
+              .reverse()
+              .find((msg) => msg.role === "user");
 
-            if (latestUserMessage?.role === "user") {
+            if (latestUserMessage) {
               const userPartsJSON = extractPartsAsJSON(latestUserMessage);
 
               messagesToSave.push({
@@ -115,7 +194,11 @@ export async function POST(req) {
             }
           }
 
-          if (responseMessage?.parts && responseMessage.parts.length > 0) {
+          if (
+            responseMessage?.parts &&
+            Array.isArray(responseMessage.parts) &&
+            responseMessage.parts.length > 0
+          ) {
             const assistantPartsJSON = extractPartsAsJSON(responseMessage);
 
             messagesToSave.push({
@@ -139,6 +222,7 @@ export async function POST(req) {
     });
   } catch (error) {
     console.error("❌ API Route Error:", error);
+
     return new Response(
       JSON.stringify({
         error: error.message || "Internal server error",
